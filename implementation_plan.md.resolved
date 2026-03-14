@@ -1,0 +1,576 @@
+# CampusRide — Full-Stack Implementation Plan
+
+Build a secure, department-priority-based ride-sharing platform for Shobhit University.
+**Backend**: Java 21 / Spring Boot 3.x, PostgreSQL+PostGIS, Redis, WebSockets.
+**Frontend**: React 18, Redux Toolkit, Material UI, Tailwind CSS, react-leaflet.
+
+## User Review Required
+
+> [!IMPORTANT]
+> **PostGIS Dependency** — PostgreSQL must have the PostGIS extension installed. The schema migration will run `CREATE EXTENSION IF NOT EXISTS postgis;`.
+
+> [!IMPORTANT]
+> **Redis Required** — A running Redis instance is needed for real-time location caching. Default: `localhost:6379`.
+
+> [!WARNING]
+> **Email Lock-in** — Registration is restricted to `@shobhituniversity.ac.in` emails. Ensure this is the correct domain before we proceed.
+
+---
+
+## Proposed Changes
+
+### 1. Project Scaffold
+
+#### [NEW] `campusride/` (Spring Boot project root)
+
+Initialize via Spring Initializr CLI with these starters:
+- `spring-boot-starter-web`, `spring-boot-starter-data-jpa`, `spring-boot-starter-security`
+- `spring-boot-starter-websocket`, `spring-boot-starter-data-redis`, `spring-boot-starter-validation`
+- PostgreSQL driver, Lombok, `hibernate-spatial` (PostGIS geometry types)
+- `jjwt` (io.jsonwebtoken) for JWT
+
+Directory layout:
+```
+d:\haykhathon\campusride\
+├── src/main/java/com/campusride/
+│   ├── config/          # Security, WebSocket, Redis, CORS
+│   ├── controller/      # REST + WebSocket controllers
+│   ├── dto/             # Request/Response DTOs
+│   ├── entity/          # JPA entities
+│   ├── enums/           # Role, RideStatus, RequestStatus
+│   ├── exception/       # Global handler + custom exceptions
+│   ├── filter/          # JWT auth filter
+│   ├── repository/      # Spring Data JPA repos (PostGIS queries)
+│   ├── service/         # Business logic
+│   └── CampusRideApplication.java
+├── src/main/resources/
+│   ├── application.yml
+│   └── db/migration/
+└── pom.xml
+```
+
+---
+
+### 2. Entities & Enums
+
+#### [NEW] [entity/User.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/entity/User.java)
+| Field | Type | Notes |
+|---|---|---|
+| id | UUID | PK, auto-generated |
+| name | String | Not blank |
+| email | String | Unique, regex `@shobhituniversity.ac.in` |
+| password | String | BCrypt encoded |
+| phone | String | |
+| department | String | e.g. "CSE", "ME" |
+| course | String | e.g. "B.Tech", "M.Tech" |
+| year | Integer | 1–5 |
+| rollNumber | String | Unique ID |
+| gender | Enum(MALE, FEMALE, OTHER) | Required |
+| role | Enum(STUDENT, ADMIN) | Default STUDENT |
+| verified | Boolean | Default false, admin-verified |
+| blocked | Boolean | Default false |
+
+#### [NEW] [entity/Vehicle.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/entity/Vehicle.java)
+| Field | Type | Notes |
+|---|---|---|
+| id | UUID | PK |
+| owner | User (ManyToOne) | FK |
+| type | Enum(BIKE, CAR) | |
+| plateNumber | String | Unique |
+| capacity | Integer | 1–6 |
+
+#### [NEW] [entity/Ride.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/entity/Ride.java)
+| Field | Type | Notes |
+|---|---|---|
+| id | UUID | PK |
+| rider | User (ManyToOne) | FK |
+| startPoint | Point (`org.locationtech.jts.geom.Point`) | SRID 4326 — ride origin |
+| endPoint | Point (`org.locationtech.jts.geom.Point`) | SRID 4326 — ride destination |
+| **routePath** | **LineString** (`org.locationtech.jts.geom.LineString`) | **SRID 4326 — full highway route, NOT NULL. Used for 5KM corridor matching.** |
+| seatsAvailable | Integer | |
+| status | Enum(OPEN, IN_PROGRESS, COMPLETED, CANCELLED) | |
+| departureTime | LocalDateTime | |
+| femaleOnly | Boolean | If true, only female passengers can join |
+
+> [!NOTE]
+> `routePath` is the **primary spatial column** for matching. The frontend sends an ordered list of `[lng, lat]` coordinates (e.g. from a map route-draw tool or a routing API). The backend converts this to a JTS `LineString`.
+
+#### [NEW] [entity/RideRequest.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/entity/RideRequest.java) — add `pickupLocation`
+Add a new spatial field to store where the passenger wants to be picked up:
+| Field | Type | Notes |
+|---|---|---|
+| pickupLocation | Point (`org.locationtech.jts.geom.Point`) | SRID 4326 — passenger's desired pickup |
+
+*(All other RideRequest fields remain unchanged.)*
+
+#### [NEW] [dto/RideResponseDTO.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/dto/RideResponseDTO.java)
+Returned from the search/match endpoint so the passenger knows how far they are from the highway route:
+| Field | Type | Notes |
+|---|---|---|
+| rideId | UUID | |
+| riderName | String | |
+| riderDept | String | |
+| riderCourse | String | |
+| riderYear | Integer | |
+| startLat / startLng | Double | Route origin |
+| endLat / endLng | Double | Route destination |
+| seatsAvailable | Integer | |
+| departureTime | LocalDateTime | |
+| **matchScore** | **Double** | Weighted score (0.0–1.0) |
+| **distanceFromRoute** | **Double (meters)** | How far the passenger's pickup is from the nearest point on the route |
+
+#### [NEW] [entity/TripSession.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/entity/TripSession.java)
+| Field | Type | Notes |
+|---|---|---|
+| id | UUID | PK |
+| ride | Ride (ManyToOne) | |
+| rider / passenger | User (ManyToOne) | |
+| startedAt / endedAt | LocalDateTime | |
+| status | Enum(ACTIVE, COMPLETED, EMERGENCY) | |
+
+#### [NEW] [entity/ChatMessage.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/entity/ChatMessage.java)
+| Field | Type | Notes |
+|---|---|---|
+| id | UUID | PK |
+| rideId | UUID | Indexed |
+| senderId | UUID | |
+| content | String | |
+| timestamp | LocalDateTime | |
+| read | Boolean | Default false |
+
+---
+
+### 3. Security & Auth
+
+#### [NEW] [config/SecurityConfig.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/config/SecurityConfig.java)
+- Stateless session, BCrypt encoder
+- Public: `/api/auth/**` — Protected: all else — Admin: `/api/admin/**`
+- CORS for React dev server
+
+#### [NEW] [filter/JwtAuthenticationFilter.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/filter/JwtAuthenticationFilter.java)
+- Extract & validate JWT from `Authorization: Bearer` header
+- Set `userId`, `role`, `dept` into SecurityContext
+
+#### [NEW] [service/AuthService.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/service/AuthService.java) + [controller/AuthController.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/controller/AuthController.java)
+- `POST /api/auth/register` — validate email regex, hash password, save (verified=false)
+- `POST /api/auth/login` — authenticate, return JWT `{userId, role, dept}`
+
+---
+
+### 4. Ride & Smart Match — 5KM Highway Corridor
+
+#### [NEW] [repository/RideRepository.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/repository/RideRepository.java)
+Native PostGIS query — find OPEN rides whose **routePath** passes within **5 KM** of the passenger's pickup point, and return the exact distance:
+```sql
+SELECT r.*,
+       ST_Distance(
+         r.route_path::geography,
+         ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography
+       ) AS distance_from_route
+FROM rides r
+WHERE ST_DWithin(
+        r.route_path::geography,
+        ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
+        5000
+      )
+  AND r.status = 'OPEN'
+  AND r.seats_available > 0
+ORDER BY distance_from_route ASC
+```
+
+> [!TIP]
+> `ST_DWithin(geography, geography, 5000)` uses a **5 000 m buffer** around the entire `LineString` route — this is the "highway corridor". The `::geography` cast ensures distances are in **meters** (geodesic), not degrees.
+
+#### [NEW] Female-Only Mode Matching
+The `RideMatchService` must filter out `femaleOnly` rides if the searching user is not `FEMALE`.
+```sql
+-- Updated RideRepository query
+AND (NOT r.female_only OR :userGender = 'FEMALE')
+```
+
+#### [NEW] `service/RideMatchService.java`
+1. Call the repository to get rides within the 5 KM corridor + their `distanceFromRoute`.
+2. For each ride, compute the **MatchScore**:
+   ```
+   matchScore = (deptMatch ? 0.5 : 0) + (courseMatch ? 0.3 : 0) + (yearMatch ? 0.2 : 0)
+   ```
+3. **Sort** by `matchScore DESC`, then by `distanceFromRoute ASC` (tie-breaker: closer to route wins).
+4. Map each result to a [RideResponseDTO](file:///d:/haykhathon/campusride/src/main/java/com/campusride/dto/RideResponseDTO.java#8-40) including `matchScore` and `distanceFromRoute`.
+5. Uses **Java 21 Virtual Threads** (`Executors.newVirtualThreadPerTaskExecutor()`) for non-blocking spatial query execution.
+
+#### [NEW] [service/RideRequestService.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/service/RideRequestService.java)
+- Passenger sends **Join Request** with their `pickupLocation` → status=`PENDING`
+- Rider sees: passenger's **Dept, Course, Year** + **distance from route** (e.g. "1.2 km from your route")
+- Rider accepts → `riderAccepted=true`
+- Passenger confirms → `passengerAccepted=true`
+- **Both true** → create [TripSession(ACTIVE)](file:///d:/haykhathon/campusride/src/main/java/com/campusride/entity/TripSession.java#10-46), decrement seats
+
+---
+
+### 5. Real-time Location Tracking
+
+#### [NEW] [config/WebSocketConfig.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/config/WebSocketConfig.java)
+- STOMP broker: `/topic` — App prefix: `/app` — Endpoint: `/ws` + SockJS
+
+#### [NEW] [config/RedisConfig.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/config/RedisConfig.java)
+- `RedisTemplate<String, String>` for location JSON
+
+#### [NEW] [controller/LocationController.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/controller/LocationController.java) (STOMP)
+- `@MessageMapping("/ride/location")` → store in Redis (`ride:location:{rideId}`, TTL 5 min), broadcast to `/topic/ride/{rideId}`
+
+---
+
+### 6. Chat System
+
+#### [NEW] [controller/ChatController.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/controller/ChatController.java)
+- `@MessageMapping("/chat/send")` → validate sender is rider/passenger of active request/trip → persist → broadcast to `/topic/chat/{rideId}`
+- `GET /api/chat/{rideId}/history` → paginated messages
+
+#### [NEW] [service/ChatService.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/service/ChatService.java)
+- Send, mark-as-read, get-history — **phone numbers never exposed**
+
+---
+
+### 7. Admin Module
+
+#### [NEW] [controller/AdminController.java](file:///d:/haykhathon/campusride/src/main/java/com/campusride/controller/AdminController.java)
+- `GET /api/admin/pending-verifications` — unverified users
+- `PUT /api/admin/verify/{userId}` — verify user
+- `PUT /api/admin/block/{userId}` — block user
+- `GET /api/admin/active-rides` — OPEN + IN_PROGRESS rides with coordinates
+
+---
+
+### 8. Configuration — [application.yml](file:///d:/haykhathon/campusride/src/main/resources/application.yml)
+```yaml
+spring:
+  threads:
+    virtual:
+      enabled: true          # Java 21 Virtual Threads for all request handling
+  datasource:
+    url: jdbc:postgresql://localhost:5432/campusride
+    username: postgres
+    password: postgres
+  jpa:
+    database-platform: org.hibernate.spatial.dialect.postgis.PostgisPG95Dialect
+    hibernate.ddl-auto: update
+  data.redis:
+    host: localhost
+    port: 6379
+app:
+  jwt:
+    secret: <generated-secret>
+    expiration-ms: 86400000
+  ride:
+    corridor-radius-meters: 5000   # 5 KM highway corridor
+```
+
+---
+
+## Frontend — Proposed Changes
+
+### 9. Frontend Scaffold
+
+#### [NEW] `campusride-frontend/` (React project root)
+
+Initialize with Vite + React template, then install dependencies:
+- **Core**: `react`, `react-dom`, `react-router-dom`
+- **State**: `@reduxjs/toolkit`, `react-redux`
+- **UI**: `@mui/material`, `@mui/icons-material`, `@emotion/react`, `@emotion/styled`
+- **Tailwind**: `tailwindcss`, `postcss`, `autoprefixer`
+- **Map**: `react-leaflet`, `leaflet`
+- **WebSocket**: `@stomp/stompjs`, `sockjs-client`
+- **HTTP**: `axios`
+
+Directory layout:
+```
+d:\haykhathon\campusride-frontend\
+├── public/
+├── src/
+│   ├── api/              # Axios instance + API service functions
+│   ├── app/              # Redux store configuration
+│   ├── components/       # Reusable UI components
+│   │   ├── layout/       #   Navbar, Sidebar, Footer
+│   │   ├── map/          #   MapView, RiderMarker
+│   │   ├── chat/         #   ChatBubble, ChatWindow, MessageItem
+│   │   ├── ride/         #   RideCard, MatchScoreBadge, RequestActions
+│   │   └── common/       #   ProtectedRoute, LoadingSpinner
+│   ├── features/         # Redux slices (one folder per domain)
+│   │   ├── auth/         #   authSlice, authAPI
+│   │   ├── rides/        #   ridesSlice, ridesAPI
+│   │   ├── liveLocation/ #   liveLocationSlice
+│   │   ├── chat/         #   chatSlice
+│   │   └── admin/        #   adminSlice, adminAPI
+│   ├── hooks/            # Custom hooks (useAuth, useWebSocket, etc.)
+│   ├── pages/            # Route-level page components
+│   │   ├── LoginPage.jsx
+│   │   ├── RegisterPage.jsx
+│   │   ├── DashboardPage.jsx
+│   │   ├── CreateRidePage.jsx
+│   │   ├── SearchRidePage.jsx
+│   │   ├── RideDetailPage.jsx
+│   │   ├── ActiveTripPage.jsx
+│   │   └── admin/
+│   │       ├── AdminDashboard.jsx
+│   │       ├── PendingVerifications.jsx
+│   │       └── ActiveRidesMap.jsx
+│   ├── utils/            # Helpers (formatDate, scoreColor, etc.)
+│   ├── App.jsx           # Router + theme provider
+│   ├── main.jsx          # Entry point
+│   └── index.css         # Tailwind directives + global styles
+├── tailwind.config.js
+├── vite.config.js
+└── package.json
+```
+
+---
+
+### 10. Redux Toolkit — Slices
+
+#### [NEW] [features/auth/authSlice.js](file:///d:/haykhathon/campusride-frontend/src/features/auth/authSlice.js)
+| State field | Type | Purpose |
+|---|---|---|
+| user | Object / null | `{id, name, email, role, dept, course, year, verified}` |
+| token | String / null | JWT stored in localStorage + slice |
+| loading | Boolean | API call in flight |
+| error | String / null | Last error message |
+
+**Async thunks**: `registerUser`, `loginUser`, `loadUserFromToken`
+- On login success: store JWT in `localStorage`, decode claims, set `user`.
+- On 401/403: clear token, redirect to `/login`.
+
+#### [NEW] [features/rides/ridesSlice.js](file:///d:/haykhathon/campusride-frontend/src/features/rides/ridesSlice.js)
+| State field | Type | Purpose |
+|---|---|---|
+| availableRides | Array | Search results (with `matchScore`) |
+| myRides | Array | Rides created by current user |
+| myRequests | Array | Requests sent by passenger |
+| currentRide | Object / null | Selected ride detail |
+| loading / error | — | Standard flags |
+
+**Async thunks**: [searchRides({lat, lng})](file:///d:/haykhathon/campusride/src/main/java/com/campusride/controller/RideController.java#31-43), [createRide](file:///d:/haykhathon/campusride/src/main/java/com/campusride/service/RideService.java#30-65), `fetchMyRides`, [sendRequest](file:///d:/haykhathon/campusride/src/main/java/com/campusride/service/RideRequestService.java#29-64), `acceptRequest`, `confirmRequest`
+
+#### [NEW] `features/liveLocation/liveLocationSlice.js`
+| State field | Type | Purpose |
+|---|---|---|
+| positions | `{[rideId]: {lat, lng, timestamp}}` | Latest rider positions |
+| connected | Boolean | WebSocket connection status |
+
+Updated only through WebSocket subscription — no REST thunks.
+
+#### [NEW] `features/chat/chatSlice.js`
+| State field | Type | Purpose |
+|---|---|---|
+| messages | `{[rideId]: Message[]}` | Chat history per ride |
+| unreadCount | `{[rideId]: number}` | Badge counts |
+
+**Async thunks**: [fetchHistory(rideId, page)](file:///d:/haykhathon/campusride-frontend/src/components/chat/ChatBubble.jsx#19-24), [markAsRead(messageId)](file:///d:/haykhathon/campusride/src/main/java/com/campusride/service/ChatService.java#51-58)
+WebSocket pushes new messages directly into the slice.
+
+#### [NEW] `features/admin/adminSlice.js`
+| State field | Type | Purpose |
+|---|---|---|
+| pendingUsers | Array | Users where `verified=false` |
+| activeRides | Array | OPEN + IN_PROGRESS rides with coords |
+
+**Async thunks**: `fetchPendingUsers`, [verifyUser(id)](file:///d:/haykhathon/campusride/src/main/java/com/campusride/controller/AdminController.java#28-36), [blockUser(id)](file:///d:/haykhathon/campusride/src/main/java/com/campusride/controller/AdminController.java#37-45), `fetchActiveRides`
+
+---
+
+### 11. API Layer
+
+#### [NEW] [api/axiosInstance.js](file:///d:/haykhathon/campusride-frontend/src/api/axiosInstance.js)
+- Base URL: `http://localhost:8080/api`
+- Request interceptor: attach `Authorization: Bearer <token>` from localStorage
+- Response interceptor: on 401, dispatch [logout](file:///d:/haykhathon/campusride-frontend/src/features/auth/authSlice.js#55-61), redirect `/login`
+
+#### [NEW] `api/authAPI.js` / `api/ridesAPI.js` / `api/adminAPI.js` / `api/chatAPI.js`
+Thin wrappers calling the Axios instance — one file per domain.
+
+---
+
+### 12. Pages — Auth
+
+#### [NEW] [pages/LoginPage.jsx](file:///d:/haykhathon/campusride-frontend/src/pages/LoginPage.jsx)
+- MUI `Card` with email + password fields
+- Email field: helper text "Use your @shobhituniversity.ac.in email"
+- On submit → dispatch `loginUser` thunk → on success redirect to `/dashboard`
+- Link to Register page
+
+#### [NEW] [pages/RegisterPage.jsx](file:///d:/haykhathon/campusride-frontend/src/pages/RegisterPage.jsx)
+- Fields: name, email, phone, password, department (dropdown), course (dropdown), year (dropdown)
+- Client-side regex validation for email
+- On submit → dispatch `registerUser` → show "Pending admin verification" success screen
+
+---
+
+### 13. Pages — Rides
+
+#### [NEW] [pages/DashboardPage.jsx](file:///d:/haykhathon/campusride-frontend/src/pages/DashboardPage.jsx)
+- Welcome header with user info
+- Two sections: **My Rides** (as rider) + **My Requests** (as passenger)
+- Each ride shown as a `RideCard` component with status badge
+- Quick-action buttons: "Offer a Ride" / "Find a Ride"
+
+#### [NEW] [pages/CreateRidePage.jsx](file:///d:/haykhathon/campusride-frontend/src/pages/CreateRidePage.jsx)
+- Map (react-leaflet) for picking start & end points via click
+- **Route path drawing**: rider clicks waypoints on the map to define the highway route → stored as an ordered `[lng, lat][]` array → sent to backend as `routePath`
+- Fields: departure time, vehicle selector, seats available
+- On submit → `POST /api/rides` (includes `routePath` coordinates) → redirect to dashboard
+
+#### [NEW] [pages/SearchRidePage.jsx](file:///d:/haykhathon/campusride-frontend/src/pages/SearchRidePage.jsx)
+- Geolocation prompt OR map-click to set passenger's pickup location
+- Calls `GET /api/rides/search?lat=...&lng=...` → backend runs 5KM corridor query
+- Results displayed as `RideCard` list, each showing:
+  - `MatchScoreBadge`: Score ≥ 0.8 → green "Excellent Match" / ≥ 0.5 → amber / < 0.5 → grey
+  - **`distanceFromRoute`** badge: e.g. "📍 1.2 km from route" — so passenger knows how far to walk/travel to reach the highway
+- Route polyline drawn on the map for each result
+- "Request Ride" button on each card
+
+#### [NEW] `pages/RideDetailPage.jsx`
+- Full ride info + rider profile (name, dept, course — **no phone**)
+- Map showing the full `routePath` as a polyline + start/end markers
+- **If passenger**: "Request Ride" / "Confirm Acceptance" button; shows own distance from route
+- **If rider**: list of pending requests with each passenger's **Dept, Year, distance from route** + "Accept" / "Reject" buttons
+- Two-way acceptance UI: progress indicator showing Rider ✓ / Passenger ✓
+
+#### [NEW] `pages/ActiveTripPage.jsx`
+- Live map: rider's real-time position via WebSocket (custom car/bike icon)
+- Route polyline overlaid
+- Embedded `ChatWindow` component (collapsible panel)
+- "End Trip" button (rider only)
+
+---
+
+### 14. Components — Map
+
+#### [NEW] `components/map/MapView.jsx`
+- `react-leaflet` `MapContainer` centered on Shobhit University coords (~29.9680° N, 77.5554° E)
+- Default zoom: 15
+- OpenStreetMap tile layer
+- Accepts `markers[]` and `route` (polyline) props
+
+#### [NEW] `components/map/RiderMarker.jsx`
+- Custom Leaflet icon (car or bike based on vehicle type)
+- Updates position smoothly when new WebSocket data arrives (CSS transition on lat/lng)
+
+---
+
+### 15. Components — Chat
+
+#### [NEW] `components/chat/ChatWindow.jsx`
+- Header: "Chat with {otherUser.name}" — no phone shown
+- Scrollable message list (`MessageItem` components)
+- Auto-scroll to bottom on new messages (`useEffect` + `scrollIntoView`)
+- Input bar: text field + send button
+- Sends via STOMP to `/app/chat/send`
+
+#### [NEW] `components/chat/MessageItem.jsx`
+- Sender-aligned bubbles (right = self, left = other)
+- Timestamp below bubble
+- Read receipt: double-tick icon, blue when `read=true`
+
+#### [NEW] [components/chat/ChatBubble.jsx](file:///d:/haykhathon/campusride-frontend/src/components/chat/ChatBubble.jsx)
+- Floating action button (bottom-right) on `RideDetailPage` / `ActiveTripPage`
+- Shows unread count badge
+- Toggles `ChatWindow` open/close
+
+---
+
+### 16. Pages — Admin Dashboard
+
+#### [NEW] [pages/admin/AdminDashboard.jsx](file:///d:/haykhathon/campusride-frontend/src/pages/admin/AdminDashboard.jsx)
+- Protected route: only accessible if `user.role === 'ADMIN'`
+- Tab navigation: **Pending Verifications** | **Active Rides Map**
+
+#### [NEW] `pages/admin/PendingVerifications.jsx`
+- MUI `DataGrid` / Table listing unverified users
+- Columns: Name, Email, Dept, Course, Year, Actions
+- Actions: "Verify" (green button) / "Block" (red button)
+- Dispatches [verifyUser(id)](file:///d:/haykhathon/campusride/src/main/java/com/campusride/controller/AdminController.java#28-36) or [blockUser(id)](file:///d:/haykhathon/campusride/src/main/java/com/campusride/controller/AdminController.java#37-45)
+
+#### [NEW] `pages/admin/ActiveRidesMap.jsx`
+- Full-width `MapView` showing all active rides as markers
+- Marker popup shows: rider name, dept, start→end, seats, status
+- Auto-refreshes via `fetchActiveRides` polling (every 10s)
+
+---
+
+### 17. Routing & Layout
+
+#### [MODIFY] [App.jsx](file:///d:/haykhathon/campusride-frontend/src/App.jsx)
+```jsx
+// Route structure
+<Routes>
+  <Route path="/login"     element={<LoginPage />} />
+  <Route path="/register"  element={<RegisterPage />} />
+
+  {/* Protected — requires JWT */}
+  <Route element={<ProtectedRoute />}>
+    <Route path="/"             element={<DashboardPage />} />
+    <Route path="/dashboard"    element={<DashboardPage />} />
+    <Route path="/rides/create" element={<CreateRidePage />} />
+    <Route path="/rides/search" element={<SearchRidePage />} />
+    <Route path="/rides/:id"    element={<RideDetailPage />} />
+    <Route path="/trip/:id"     element={<ActiveTripPage />} />
+  </Route>
+
+  {/* Admin — requires ADMIN role */}
+  <Route element={<ProtectedRoute requiredRole="ADMIN" />}>
+    <Route path="/admin"        element={<AdminDashboard />} />
+  </Route>
+</Routes>
+```
+
+#### [NEW] [components/common/ProtectedRoute.jsx](file:///d:/haykhathon/campusride-frontend/src/components/common/ProtectedRoute.jsx)
+- Reads `token` + `user.role` from Redux
+- If not authenticated → `<Navigate to="/login" />`
+- If `requiredRole` set and doesn't match → `<Navigate to="/" />`
+
+---
+
+### 18. WebSocket Hook
+
+#### [NEW] `hooks/useWebSocket.js`
+- Creates a single STOMP client on mount (`ws://localhost:8080/ws` + SockJS)
+- Exposes: [subscribe(destination, callback)](file:///d:/haykhathon/campusride-frontend/src/utils/websocketService.js#28-41), [send(destination, body)](file:///d:/haykhathon/campusride-frontend/src/utils/websocketService.js#42-52), `connected`
+- Used by `ActiveTripPage` (location) and `ChatWindow` (messages)
+
+---
+
+## Verification Plan
+
+### Automated Tests
+| Test | What it covers | Run command |
+|---|---|---|
+| `RideMatchServiceTest` (JUnit 5) | Score computation with mocked data | `mvnw test` |
+| `AuthServiceTest` (JUnit 5) | Email regex, password hashing, JWT generation | `mvnw test` |
+| `RideRequestServiceTest` (JUnit 5) | Two-way acceptance → TripSession creation | `mvnw test` |
+| `RideRepositoryIT` (Testcontainers) | PostGIS `ST_DWithin` query correctness | `mvnw test` |
+
+### Manual Verification
+1. Start server: `cd d:\haykhathon\campusride && mvnw spring-boot:run`
+2. `POST /api/auth/register` with valid `@shobhituniversity.ac.in` email → 200
+3. Register with invalid email → 400
+4. `POST /api/auth/login` → JWT token returned
+5. Create ride using JWT → 201
+6. Search rides near a coordinate → results sorted by match score
+7. WebSocket: connect `/ws`, subscribe `/topic/ride/{id}`, send location → broadcast received
+8. Chat: send message via `/app/chat/send` → appears in `/topic/chat/{rideId}` and persists in DB
+
+### Frontend Automated
+| Test | What it covers | Run command |
+|---|---|---|
+| Vite build | All imports resolve, no TS/JS errors | `cd campusride-frontend && npm run build` |
+| Lint | Code quality | `npm run lint` |
+
+### Frontend Manual Verification (Browser)
+1. Start dev server: `cd d:\haykhathon\campusride-frontend && npm run dev`
+2. Navigate to `/login` → form renders, email validation works
+3. Navigate to `/register` → all dropdowns populate, regex blocks invalid emails
+4. Login with valid user → redirected to `/dashboard`, JWT stored
+5. `/rides/search` → map loads, geolocation or click works, results show match scores
+6. `/rides/create` → map click sets points, form submits
+7. `/rides/:id` → two-way acceptance buttons appear correctly for rider vs passenger
+8. `/trip/:id` → live marker moves on WebSocket, chat bubble opens, messages send/receive, auto-scroll works, read receipts update
+9. `/admin` → only accessible with ADMIN role; table loads, verify/block actions work; map shows active rides

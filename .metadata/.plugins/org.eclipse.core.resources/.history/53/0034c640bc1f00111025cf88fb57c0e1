@@ -1,0 +1,42 @@
+spring:
+  threads:
+    virtual:
+      enabled: true
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/campusride
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.spatial.dialect.postgis.PostgisPG10Dialect
+        format_sql: true
+    show-sql: false
+    open-in-view: false
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+server:
+  port: 8080
+
+app:
+  jwt:
+    secret: campusride-super-secret-key-that-is-at-least-256-bits-long-for-hs256
+    expiration-ms: 86400000
+  ride:
+    corridor-radius-meters: 5000
+  google:
+    geolocation-api-key: # Optional: Add your Google Geolocation API key for WiFi-accuracy location
+
+logging:
+  level:
+    com.campusride: DEBUG
+    org.hibernate.SQL: WARN
