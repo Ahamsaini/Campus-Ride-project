@@ -1,1 +1,40 @@
-node_modules
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+.metadata/
+*.swp
+*.swo
+.settings/
+.project
+.classpath
+.factorypath
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+*.log
+tunnel_final.log
+tunnel.err
+tunnel_launcher.py
+tunnel_log.txt
+cloudflared_output.txt
+
+# Maven / Java
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/wrapper/maven-wrapper.jar
+
+# Secrets and Internal Artifacts
+implementation_plan.md.resolved
+task.md
+walkthrough.md
+realtime_marker_snippet.js
+campusride/src/main/resources/application.yml
