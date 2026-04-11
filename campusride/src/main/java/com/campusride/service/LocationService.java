@@ -31,6 +31,19 @@ public class LocationService {
         return redisTemplate.opsForValue().get("ride:location:" + rideId);
     }
 
+    public double[] getRiderCoordinates(UUID rideId) {
+        String json = getLocation(rideId);
+        if (json == null) return null;
+        try {
+            // Simple manual extraction to avoid external dependencies
+            String latStr = json.split("\"lat\":")[1].split(",")[0];
+            String lngStr = json.split("\"lng\":")[1].split(",")[0];
+            return new double[] { Double.parseDouble(latStr), Double.parseDouble(lngStr) };
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public java.util.List<UUID> findNearbyRides(double lat, double lng, double radiusKm) {
         org.springframework.data.geo.Circle circle = new org.springframework.data.geo.Circle(
                 new org.springframework.data.geo.Point(lng, lat),

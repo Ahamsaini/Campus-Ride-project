@@ -4,16 +4,17 @@ import SockJS from 'sockjs-client'
 class WebSocketService {
     constructor() {
         this.client = null
-        this.subscriptions = {}
+        this.subscriptions = {} // destination -> { callbacks: Set, subObj: null }
+        this.onConnectCallbacks = []
     }
 
     connect(onConnect) {
-        if (!this.onConnectCallbacks) this.onConnectCallbacks = []
-        if (onConnect) this.onConnectCallbacks.push(onConnect)
+        if (onConnect && !this.onConnectCallbacks.includes(onConnect)) {
+            this.onConnectCallbacks.push(onConnect)
+        }
 
         if (this.client && this.client.connected) {
-            this.onConnectCallbacks.forEach(cb => cb())
-            this.onConnectCallbacks = []
+            if (onConnect) onConnect()
             return
         }
         if (this.client) return
@@ -23,9 +24,14 @@ class WebSocketService {
             debug: (str) => console.log(str),
             onConnect: () => {
                 console.log('Connected to WebSocket')
+                
+                // Re-subscribe to all existing destinations
+                Object.keys(this.subscriptions).forEach(destination => {
+                    this._doSubscribe(destination)
+                })
+
                 if (this.onConnectCallbacks) {
                     this.onConnectCallbacks.forEach(cb => cb())
-                    this.onConnectCallbacks = []
                 }
             },
             onStompError: (frame) => {
@@ -37,22 +43,51 @@ class WebSocketService {
     }
 
     subscribe(destination, callback) {
-        if (!this.client || !this.client.connected) {
-            console.error('WebSocket not connected')
-            return
+        if (!this.subscriptions[destination]) {
+            this.subscriptions[destination] = {
+                callbacks: new Set(),
+                subObj: null
+            }
+        }
+        
+        this.subscriptions[destination].callbacks.add(callback)
+
+        if (this.client && this.client.connected) {
+            this._doSubscribe(destination)
         }
 
-        const subId = this.client.subscribe(destination, (message) => {
-            callback(JSON.parse(message.body))
-        })
-
-        this.subscriptions[destination] = subId
-        return subId
+        return {
+            unsubscribe: () => {
+                const sub = this.subscriptions[destination]
+                if (sub) {
+                    sub.callbacks.delete(callback)
+                    if (sub.callbacks.size === 0) {
+                        if (sub.subObj) sub.subObj.unsubscribe()
+                        delete this.subscriptions[destination]
+                    }
+                }
+            }
+        }
     }
 
-    unsubscribe(subId) {
-        if (subId && typeof subId.unsubscribe === 'function') {
-            subId.unsubscribe()
+    _doSubscribe(destination) {
+        const sub = this.subscriptions[destination]
+        if (!sub) return
+
+        // Unsubscribe existing if any (to avoid duplicates on manual re-sub)
+        if (sub.subObj) {
+            sub.subObj.unsubscribe()
+        }
+
+        sub.subObj = this.client.subscribe(destination, (message) => {
+            const data = JSON.parse(message.body)
+            sub.callbacks.forEach(cb => cb(data))
+        })
+    }
+
+    unsubscribe(subHandle) {
+        if (subHandle && typeof subHandle.unsubscribe === 'function') {
+            subHandle.unsubscribe()
         }
     }
 
@@ -71,6 +106,10 @@ class WebSocketService {
         if (this.client) {
             this.client.deactivate()
             this.client = null
+            // Clear internal state but keep callbacks for next connect? 
+            // Usually, disconnect means we're done.
+            this.subscriptions = {}
+            this.onConnectCallbacks = []
         }
     }
 }

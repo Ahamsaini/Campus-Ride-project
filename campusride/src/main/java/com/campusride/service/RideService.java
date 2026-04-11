@@ -66,7 +66,8 @@ public class RideService {
                 .departureTime(request.getDepartureTime())
                 .pickupLocationName(request.getPickupLocationName())
                 .dropoffLocationName(request.getDropoffLocationName())
-                .route(request.getRouteId() != null ? savedRouteRepository.findById(request.getRouteId()).orElse(null)
+                .route(request.getRouteId() != null 
+                        ? savedRouteRepository.findById(java.util.Objects.requireNonNull(request.getRouteId())).orElse(null)
                         : null)
                 .build();
 
@@ -90,7 +91,7 @@ public class RideService {
         List<RideResponseDTO> dtos = new ArrayList<>();
 
         for (Object[] row : results) {
-            // Find the UUID manually to avoid index shifts from SELECT r.*
+            // Find the UUID manually
             UUID rideId = null;
             for (Object col : row) {
                 if (col instanceof java.util.UUID) {
@@ -102,36 +103,45 @@ public class RideService {
             if (rideId == null) continue;
 
             Ride ride = rideRepository.findById(rideId).orElse(null);
-            if (ride == null)
-                continue;
+            if (ride == null) continue;
 
             User rider = ride.getRider();
-            double matchScore = computeMatchScore(passenger, rider);
+            // Expected columns from RideRepository: r.*, pickup_dist, p_pos, d_pos, segment_dist
+            // Last 4 indexes: length-4, length-3, length-2, length-1
+            double pickupDist = ((Number) row[row.length - 4]).doubleValue();
+            double segmentDistMeters = ((Number) row[row.length - 1]).doubleValue();
 
-            // Last 3 columns: pickup_dist, p_pos, d_pos
-            double pickupDist = 0;
-            if (row[row.length - 3] instanceof Number) {
-                pickupDist = ((Number) row[row.length - 3]).doubleValue();
+            double segmentDistKm = segmentDistMeters / 1000.0;
+            double fuelShare = segmentDistKm + Math.floor(segmentDistKm / 10.0) * 5.0;
+            
+            // Progress Check for Mid-Route Joins
+            if (ride.getStatus() == RideStatus.IN_PROGRESS) {
+                double[] riderCoords = locationService.getRiderCoordinates(rideId);
+                if (riderCoords != null) {
+                    Double pPos = ((Number) row[row.length - 3]).doubleValue(); // p_pos
+                    Double riderProgress = rideRepository.calculatePointProgress(rideId, riderCoords[0], riderCoords[1]);
+                    if (riderProgress != null && riderProgress >= pPos) {
+                        log.info("Filtering out in-progress ride {} - Rider already passed pickup point (Progress: {}, Pickup: {})", rideId, riderProgress, pPos);
+                        continue;
+                    }
+                }
             }
 
-            // Compute dropoff distance using PostGIS in-memory
-            // (alternatively, we could add it to the SQL query)
+            double matchScore = computeMatchScore(passenger, rider);
+
             double dropoffDist = 0;
             try {
                 org.locationtech.jts.geom.Point dropoffPt = geometryFactory.createPoint(
                         new Coordinate(dLng, dLat));
-                dropoffDist = ride.getRoutePath().distance(dropoffPt) * 111_320; // rough meters
-            } catch (Exception ignored) {
-            }
+                dropoffDist = ride.getRoutePath().distance(dropoffPt) * 111320; 
+            } catch (Exception ignored) {}
 
-            // Extract route coordinates from LineString for frontend map visualization
             Coordinate[] routeCoords = ride.getRoutePath().getCoordinates();
             List<double[]> routeCoordsList = new ArrayList<>();
             for (Coordinate c : routeCoords) {
-                routeCoordsList.add(new double[] { c.getY(), c.getX() }); // [lat, lng] for Leaflet
+                routeCoordsList.add(new double[] { c.getY(), c.getX() });
             }
 
-            // Vehicle info
             String vehicleType = null;
             String plateNumber = null;
             if (ride.getVehicle() != null) {
@@ -144,7 +154,6 @@ public class RideService {
                     .riderId(rider.getId())
                     .riderName(rider.getName())
                     .riderDept(rider.getDepartment())
-                    .riderCourse(rider.getCourse())
                     .riderCourse(rider.getCourse())
                     .riderYear(rider.getYear())
                     .pickupLocationName(ride.getPickupLocationName() != null ? ride.getPickupLocationName() : (ride.getRoute() != null ? ride.getRoute().getName().split(" to ")[0] : "Starting Point"))
@@ -163,7 +172,7 @@ public class RideService {
                     .distanceFromRoute(Math.round(pickupDist * 100.0) / 100.0)
                     .dropoffDistFromRoute(Math.round(dropoffDist * 100.0) / 100.0)
                     .emergencyActive(Boolean.TRUE.equals(ride.getEmergencyActive()))
-                    .estimatedContribution(calculateEstimatedContribution(ride))
+                    .estimatedContribution(Math.round(fuelShare * 100.0) / 100.0)
                     .riderTrustScore(rider.getTrustScore())
                     .build());
         }
@@ -198,9 +207,6 @@ public class RideService {
         }
     }
 
-    /**
-     * MatchScore = (DeptMatch * 0.5) + (CourseMatch * 0.3) + (YearMatch * 0.2)
-     */
     private double computeMatchScore(User passenger, User rider) {
         double score = 0.0;
         if (passenger.getDepartment().equalsIgnoreCase(rider.getDepartment())) {
@@ -229,7 +235,7 @@ public class RideService {
             throw new IllegalArgumentException("You can only update your own rides");
         }
         ride.setStatus(RideStatus.CANCELLED);
-        locationService.removeLocation(rideId); // Remove from Redis
+        locationService.removeLocation(rideId);
         Ride saved = rideRepository.save(ride);
         broadcastStatusUpdate(saved);
         return convertToDTO(saved);
@@ -266,7 +272,7 @@ public class RideService {
             
             log.info("Completing ride: {}", rideId);
             ride.setStatus(RideStatus.COMPLETED);
-            ride.setEmergencyActive(false); // Clear emergency if any
+            ride.setEmergencyActive(false);
 
             if (ride.getRoute() != null) {
                 SavedRoute route = ride.getRoute();
@@ -275,7 +281,6 @@ public class RideService {
                 savedRouteRepository.save(route);
             }
 
-            // Close all active sessions for this ride
             List<TripSession> sessions = tripSessionRepository.findByRideId(rideId);
             for (TripSession session : sessions) {
                 if (session.getStatus() == TripStatus.ACTIVE || session.getStatus() == TripStatus.EMERGENCY) {
@@ -286,7 +291,7 @@ public class RideService {
             }
 
             Ride saved = rideRepository.save(ride);
-            locationService.removeLocation(rideId); // Remove from Redis
+            locationService.removeLocation(rideId);
             try {
                 updateUserStats(ride);
             } catch (Exception e) {
@@ -337,19 +342,14 @@ public class RideService {
     @Transactional(readOnly = true)
     public List<RideHistoryDTO> getUserTripHistory(UUID userId, Integer year, Integer month, Integer day) {
         List<TripSession> sessions = tripSessionRepository.findByRiderIdOrPassengerId(userId, userId);
-
-        // Group by Ride to avoid duplicates and filter by date if provided
         Map<UUID, Ride> ridesMap = sessions.stream()
                 .map(TripSession::getRide)
                 .filter(r -> {
-                    if (year == null)
-                        return true;
+                    if (year == null) return true;
                     LocalDateTime dt = r.getCreatedAt();
                     boolean match = dt.getYear() == year;
-                    if (match && month != null)
-                        match = dt.getMonthValue() == month;
-                    if (match && day != null)
-                        match = dt.getDayOfMonth() == day;
+                    if (match && month != null) match = dt.getMonthValue() == month;
+                    if (match && day != null) match = dt.getDayOfMonth() == day;
                     return match;
                 })
                 .collect(Collectors.toMap(Ride::getId, r -> r, (r1, r2) -> r1));
@@ -362,7 +362,6 @@ public class RideService {
 
     public RideHistoryDTO convertToHistoryDTO(Ride ride) {
         List<TripSession> participants = tripSessionRepository.findByRideId(ride.getId());
-
         List<double[]> path = new ArrayList<>();
         for (Coordinate c : ride.getRoutePath().getCoordinates()) {
             path.add(new double[] { c.getY(), c.getX() });
@@ -376,8 +375,7 @@ public class RideService {
                 .startTime(ride.getDepartureTime() != null ? ride.getDepartureTime() : ride.getCreatedAt())
                 .endTime(ride.getStatus() == RideStatus.COMPLETED ? LocalDateTime.now() : null)
                 .status(ride.getStatus().name())
-                .passengerNames(participants.stream().map(p -> p.getPassenger().getName()).distinct()
-                        .collect(Collectors.toList()))
+                .passengerNames(participants.stream().map(p -> p.getPassenger().getName()).distinct().toList())
                 .routePath(path)
                 .build();
     }
@@ -402,22 +400,15 @@ public class RideService {
     }
 
     private Double calculateEstimatedContribution(Ride ride) {
-        if (ride.getRoutePath() == null)
-            return 0.0;
-        double distanceDegrees = ride.getRoutePath().getLength();
-        double distanceKm = distanceDegrees * 111.0;
-
-        double ratePerKm = 5.0; // Default Car
-        if (ride.getVehicle() != null && "BIKE".equals(ride.getVehicle().getType().name())) {
-            ratePerKm = 2.5;
-        }
-
-        return Math.round(distanceKm * ratePerKm * 10.0) / 10.0;
+        if (ride.getRoutePath() == null) return 0.0;
+        double distanceKm = ride.getRoutePath().getLength() * 111.0;
+        double fuelShare = distanceKm + Math.floor(distanceKm / 10.0) * 5.0;
+        return Math.round(fuelShare * 100.0) / 100.0;
     }
 
     @Transactional
     public RideResponseDTO toggleSharing(UUID rideId, UUID userId, boolean active) {
-        Ride ride = rideRepository.findById(rideId)
+        Ride ride = rideRepository.findById(java.util.Objects.requireNonNull(rideId))
                 .orElseThrow(() -> new IllegalArgumentException("Ride not found"));
         if (!ride.getRider().getId().equals(userId)) {
             throw new IllegalStateException("Only the rider can toggle sharing");
@@ -456,8 +447,7 @@ public class RideService {
     }
 
     public RideResponseDTO convertToDTO(Ride ride) {
-        if (ride == null)
-            return null;
+        if (ride == null) return null;
 
         List<double[]> routeCoordsList = new ArrayList<>();
         if (ride.getRoutePath() != null) {
@@ -477,17 +467,12 @@ public class RideService {
         User rider = ride.getRider();
         java.util.Objects.requireNonNull(rider, "Rider cannot be null");
 
-        // Healing logic: If status is EMERGENCY (from previous buggy version),
-        // move it to the boolean flag and reset status to IN_PROGRESS
         if (ride.getStatus() != null && "EMERGENCY".equals(ride.getStatus().name())) {
             ride.setStatus(RideStatus.IN_PROGRESS);
             ride.setEmergencyActive(true);
         }
 
-        String statusStr = "UNKNOWN";
-        if (ride.getStatus() != null) {
-            statusStr = ride.getStatus().name();
-        }
+        String statusStr = (ride.getStatus() != null) ? ride.getStatus().name() : "UNKNOWN";
 
         return RideResponseDTO.builder()
                 .id(ride.getId())

@@ -48,6 +48,43 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
     return R * c; // in metres
 }
 
+const NOTIFICATION_SOUND = 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3'
+let notificationAudio = null
+let vibrationInterval = null
+
+const startNotification = () => {
+    try {
+        if (!notificationAudio) {
+            notificationAudio = new Audio(NOTIFICATION_SOUND)
+            notificationAudio.loop = true
+            notificationAudio.play().catch(e => console.log('Audio play failed:', e))
+        }
+        
+        if (navigator.vibrate && !vibrationInterval) {
+            vibrationInterval = setInterval(() => {
+                navigator.vibrate([200, 100, 200])
+            }, 1000)
+        }
+    } catch (err) {
+        console.error('Notification error:', err)
+    }
+}
+
+const stopNotification = () => {
+    if (notificationAudio) {
+        notificationAudio.pause()
+        notificationAudio.currentTime = 0
+        notificationAudio = null
+    }
+    if (vibrationInterval) {
+        clearInterval(vibrationInterval)
+        vibrationInterval = null
+    }
+    if (navigator.vibrate) {
+        navigator.vibrate(0)
+    }
+}
+
 const LiveTrackingPage = () => {
     const { rideId } = useParams()
     const navigate = useNavigate()
@@ -66,15 +103,19 @@ const LiveTrackingPage = () => {
     const [isReporting, setIsReporting] = useState(false)
     const [gpsError, setGpsError] = useState(null)
     const [isNavigationMode, setIsNavigationMode] = useState(true) // Follow me strictly
+    const [incomingRequest, setIncomingRequest] = useState(null)
 
     // Check if current user is the rider (string-safe comparison)
     const isRider = ride?.riderId?.toString() === user?.id?.toString()
     const watchIdRef = useRef(null)
     const localGPSRef = useRef(null) // Ref mirror for interval-based sync
+    const rideRef = useRef(null) // Ref mirror to avoid closure traps in listeners
+    const lastSyncTimeRef = useRef(0) // Ref for throttling syncs
     const backendFallbackCalledRef = useRef(false) // Prevent duplicate backend calls
 
-    // Keep ref in sync with state
+    // Keep refs in sync with state
     useEffect(() => { localGPSRef.current = localGPS }, [localGPS])
+    useEffect(() => { rideRef.current = ride }, [ride])
 
     // Track GPS
     useEffect(() => {
@@ -114,7 +155,6 @@ const LiveTrackingPage = () => {
             else if (err.code === 3) setGpsError('GPS timeout. Getting signal...')
         }
 
-        // 1. Get initial position immediately
         navigator.geolocation.getCurrentPosition(handleSuccess, handleError, {
             enableHighAccuracy: true, maximumAge: 0, timeout: 5000
         })
@@ -285,58 +325,60 @@ const LiveTrackingPage = () => {
         }
     }
 
-    // FIX 3: Removed raw GPS probe from fetchData — Smart Anchor + watchPosition handle it
-    useEffect(() => {
-        const fetchData = async () => {
-            try {
-                const [rideRes, reqRes] = await Promise.all([
-                    axios.get(`/rides/${rideId}`),
-                    axios.get(`/ride-requests/ride/${rideId}`)
-                ])
-                const fetchedRide = rideRes.data
-                setRide(fetchedRide)
+    const fetchData = useCallback(async () => {
+        try {
+            const [rideRes, reqRes] = await Promise.all([
+                axios.get(`/rides/${rideId}`),
+                axios.get(`/ride-requests/ride/${rideId}`)
+            ])
+            const fetchedRide = rideRes.data
+            setRide(fetchedRide)
 
-                if (fetchedRide.emergencyActive) {
-                    setSosSent(true)
-                }
-
-                // Auto-share location ONLY when trip is IN_PROGRESS
-                const isTripActive = fetchedRide.status === 'IN_PROGRESS' || fetchedRide.emergencyActive
-                setIsSharingLocation(isTripActive)
-
-                // Filter only confirmed requests
-                const confirmed = reqRes.data.filter(r => r.riderAccepted && r.passengerAccepted)
-                setRequests(confirmed)
-
-                // Initialize rider location from start point ONLY if we don't have it yet
-                const riderId = fetchedRide.riderId?.toString()
-                if (riderId) {
-                    setParticipantsLocations(prev => {
-                        if (prev[riderId]) return prev // Don't overwrite live data
-                        return {
-                            ...prev,
-                            [riderId]: {
-                                lat: fetchedRide.startLat,
-                                lng: fetchedRide.startLng,
-                                role: 'RIDER',
-                                name: fetchedRide.riderName
-                            }
-                        }
-                    })
-                }
-            } catch (err) {
-                console.error('Failed to fetch tracking data', err)
+            if (fetchedRide.emergencyActive) {
+                setSosSent(true)
             }
+
+            // Auto-share location ONLY when trip is IN_PROGRESS
+            const isTripActive = fetchedRide.status === 'IN_PROGRESS' || fetchedRide.emergencyActive
+            setIsSharingLocation(isTripActive)
+
+            // Filter only confirmed requests
+            const confirmed = reqRes.data.filter(r => r.riderAccepted && r.passengerAccepted)
+            setRequests(confirmed)
+
+            // Initialize rider location from start point ONLY if we don't have it yet
+            const riderId = fetchedRide.riderId?.toString()
+            if (riderId) {
+                setParticipantsLocations(prev => {
+                    if (prev[riderId]) return prev // Don't overwrite live data
+                    return {
+                        ...prev,
+                        [riderId]: {
+                            lat: fetchedRide.startLat,
+                            lng: fetchedRide.startLng,
+                            role: 'RIDER',
+                            name: fetchedRide.riderName
+                        }
+                    }
+                })
+            }
+        } catch (err) {
+            console.error('Failed to fetch tracking data', err)
         }
+    }, [rideId])
+
+    useEffect(() => {
         fetchData()
 
+        const subs = []
         wsService.connect(() => {
             // 1. Subscribe to Location Updates
-            wsService.subscribe(`/topic/ride/${rideId}`, (data) => {
+            subs.push(wsService.subscribe(`/topic/ride/${rideId}`, (data) => {
                 const incomingId = data.userId || data.id // Fallback ID
                 if (incomingId) {
                     const uid = incomingId.toString()
-                    const isRiderUpdate = uid === ride?.riderId?.toString()
+                    // Use rideRef to get the LATEST ride data without re-subscribing
+                    const isRiderUpdate = uid === rideRef.current?.riderId?.toString()
                     console.log(`📍 Received location for ${uid}: ${data.lat}, ${data.lng} (${data.role})${isRiderUpdate ? ' [RIDER]' : ''}`)
                     
                     setParticipantsLocations(prev => {
@@ -353,7 +395,7 @@ const LiveTrackingPage = () => {
                         }
                     })
                 }
-            })
+            }))
 
             wsService.subscribe(`/topic/ride/${rideId}/sos`, (data) => {
                 console.log('🚨 SOS Emergency received:', data)
@@ -369,9 +411,14 @@ const LiveTrackingPage = () => {
             })
 
             // 4. Subscribe to Ride Status Changes (Start/Complete)
-            wsService.subscribe(`/topic/ride/${rideId}/status`, (data) => {
+            subs.push(wsService.subscribe(`/topic/ride/${rideId}/status`, (data) => {
                 console.log('🔄 Ride status update:', data)
-                if (data.status) {
+                
+                // Determine if this is a RideStatus update or a RideRequest handshake (mid-route join)
+                const isRideStatus = ['OPEN', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'].includes(data.status)
+                const isHandshake = data.status === 'ACCEPTED' && data.passenger
+                
+                if (isRideStatus) {
                     setRide(prev => prev ? { ...prev, status: data.status } : null)
                     
                     if (data.status === 'IN_PROGRESS') {
@@ -380,10 +427,54 @@ const LiveTrackingPage = () => {
                         setIsSharingLocation(false)
                         if (data.status !== 'OPEN') setShowFeedback(true)
                     }
+                } else if (isHandshake) {
+                    console.log('✅ Mid-route participant joined! Syncing tracking data...')
+                    fetchData() // Refresh confirmed requests to show new markers
+                }
+            }))
+
+            // 5. Subscribe to Join Requests (Mid-Route Join)
+            wsService.subscribe(`/topic/ride/${rideId}/requests`, (data) => {
+                console.log('📬 New join request received:', data)
+                // Only show alert and play sound to the rider
+                if (rideRef.current?.riderId?.toString() === user?.id?.toString()) {
+                    setIncomingRequest(data)
+                    startNotification()
                 }
             })
         })
-    }, [rideId])
+
+        return () => {
+            subs.forEach(s => s?.unsubscribe())
+        }
+    }, [rideId, fetchData, user?.id])
+
+    const handleRequestAction = async (requestId, action) => {
+        try {
+            stopNotification()
+            await axios.put(`/ride-requests/${requestId}/${action}`)
+            fetchData()
+            setIncomingRequest(null)
+        } catch (err) {
+            alert(err.response?.data?.message || 'Action failed')
+        }
+    }
+
+    // Auto-timeout for join requests (2 minutes)
+    useEffect(() => {
+        if (!incomingRequest) return
+
+        const timer = setTimeout(() => {
+            console.log('⏰ Join request timed out after 2 minutes')
+            handleRequestAction(incomingRequest.id, 'expire')
+            stopNotification()
+        }, 120000) // 2 minutes
+
+        return () => {
+            clearTimeout(timer)
+            stopNotification()
+        }
+    }, [incomingRequest])
 
     // FIX 1: Removed duplicate calculateDistance — using module-level version
 
@@ -994,6 +1085,45 @@ const LiveTrackingPage = () => {
                         )}
                     </Stack>
                 </DialogContent>
+            </Dialog>
+
+            {/* Incoming Join Request Alert */}
+            <Dialog 
+                open={!!incomingRequest} 
+                onClose={() => setIncomingRequest(null)}
+                PaperProps={{ sx: { borderRadius: 6, p: 2 } }}
+            >
+                <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <Avatar sx={{ bgcolor: 'secondary.main' }}><Person /></Avatar>
+                    New Join Request!
+                </DialogTitle>
+                <DialogContent>
+                    <Typography variant="body1" className="font-bold">
+                        {incomingRequest?.passenger?.name} wants to join your ride.
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                        From: {incomingRequest?.pickupLocationName || 'Current Route'}
+                    </Typography>
+                    <Typography variant="body2" color="primary.main" sx={{ mt: 1, fontWeight: 'bold' }}>
+                        Estimated Contribution: ₹{incomingRequest?.estimatedContribution}
+                    </Typography>
+                </DialogContent>
+                <DialogActions sx={{ p: 3, pt: 0 }}>
+                    <Button 
+                        color="error" 
+                        onClick={() => handleRequestAction(incomingRequest.id, 'reject')}
+                    >
+                        Decline
+                    </Button>
+                    <Button 
+                        variant="contained" 
+                        color="success" 
+                        onClick={() => handleRequestAction(incomingRequest.id, 'rider-accept')}
+                        sx={{ borderRadius: 3, px: 4 }}
+                    >
+                        Accept Passenger
+                    </Button>
+                </DialogActions>
             </Dialog>
 
             <style>

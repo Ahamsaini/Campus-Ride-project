@@ -12,12 +12,13 @@ import {
     DeleteOutline, Save, Restore, Route as RouteIcon,
     NavigateNext, NavigateBefore, DoneAll, History,
     Timeline, Info, Undo, Brush, AutoFixHigh, TravelExplore,
-    Female, Repeat, Person
+    Female, Repeat, Person, SwapCalls
 } from '@mui/icons-material'
 import CampusMap from '../components/map/CampusMap'
 import axios from '../api/axiosInstance'
 import { useNavigate } from 'react-router-dom'
 import { fetchRoadRoute } from '../utils/routeUtils'
+import LocationSearchInput from '../components/common/LocationSearchInput'
 
 const CreateRidePage = () => {
     const [activeStep, setActiveStep] = useState(0)
@@ -258,6 +259,17 @@ const CreateRidePage = () => {
         setSelectedRouteId(routeId)
     }
 
+    const handleReverseRoute = () => {
+        if (points.length < 2) return
+        const reversed = [...points].reverse()
+        setPoints(reversed)
+        if (routePath.length > 0) {
+            setRoutePath([...routePath].reverse())
+        }
+        // If we were using a saved route, clear the selection ID as it's now modified
+        setSelectedRouteId('')
+    }
+
     const handleNext = async () => {
         if (activeStep === 0) {
             if (points.length < 2) {
@@ -474,6 +486,57 @@ const CreateRidePage = () => {
 
                             {activeStep === 0 && (
                                 <Stack spacing={3}>
+                                    {/* Type Location Section */}
+                                    <Box sx={{ p: 2, borderRadius: 4, bgcolor: 'rgba(25, 118, 210, 0.03)', border: '1px solid rgba(25, 118, 210, 0.12)' }}>
+                                        <Typography variant="caption" className="font-bold opacity-60 uppercase" sx={{ mb: 1.5, display: 'block' }}>TYPE LOCATION OR USE GPS</Typography>
+                                        <Stack spacing={2}>
+                                            <LocationSearchInput
+                                                label="Starting Point"
+                                                placeholder="E.g. Main Gate, Library..."
+                                                color="success"
+                                                icon={<LocationOn />}
+                                                value={points.length >= 1 ? { lat: points[0].lat, lng: points[0].lng, name: points[0].label } : null}
+                                                onLocationSelect={async (loc) => {
+                                                    // Simulate a map click at the geocoded position
+                                                    handleMapClick({ lat: loc.lat, lng: loc.lng })
+                                                }}
+                                                onClear={() => {
+                                                    // Remove start point and everything after
+                                                    setPoints([])
+                                                    setRoutePath([])
+                                                    setSuggestedRoutes([])
+                                                    setAiSuggestion(null)
+                                                }}
+                                                disabled={activeStep !== 0}
+                                            />
+                                            <LocationSearchInput
+                                                label="Ending Point"
+                                                placeholder="E.g. Campus, Hostel..."
+                                                color="error"
+                                                icon={<LocationOn />}
+                                                value={points.length >= 2 ? { lat: points[points.length - 1].lat, lng: points[points.length - 1].lng, name: points[points.length - 1].label } : null}
+                                                onLocationSelect={async (loc) => {
+                                                    handleMapClick({ lat: loc.lat, lng: loc.lng })
+                                                }}
+                                                onClear={() => {
+                                                    // Remove end point only
+                                                    if (points.length >= 2) {
+                                                        const updated = points.slice(0, -1)
+                                                        setPoints(updated)
+                                                        setRoutePath([])
+                                                        setSuggestedRoutes([])
+                                                    }
+                                                }}
+                                                disabled={activeStep !== 0 || points.length < 1}
+                                            />
+                                        </Stack>
+                                        <Typography variant="caption" color="text.secondary" sx={{ mt: 1.5, display: 'block', textAlign: 'center', opacity: 0.7 }}>
+                                            Or click directly on the map to place points
+                                        </Typography>
+                                    </Box>
+
+                                    <Divider sx={{ my: 1 }} />
+
                                     {/* Mode Selector */}
                                     <Box>
                                         <Typography variant="caption" className="font-bold opacity-60 uppercase mb-1 d-block">CHOOSE DESIGN MODE</Typography>
@@ -633,14 +696,32 @@ const CreateRidePage = () => {
                                     )}
 
                                     <Divider />
-                                    <Box>
-                                        <Typography variant="caption" className="font-bold opacity-60 uppercase">REUSE SAVED PATHS</Typography>
-                                        <FormControl fullWidth size="small" sx={{ mt: 1 }}>
-                                            <Select value={selectedRouteId} onChange={(e) => loadSavedRoute(e.target.value)} sx={{ borderRadius: 3 }} startAdornment={<History sx={{ mr: 1, opacity: 0.5 }} />} displayEmpty>
-                                                <MenuItem value="" disabled>Select from previous trips</MenuItem>
-                                                {savedRoutes.map(r => <MenuItem key={r.id} value={r.id}>{r.name}</MenuItem>)}
-                                            </Select>
-                                        </FormControl>
+                                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                                        <Box sx={{ flexGrow: 1 }}>
+                                            <Typography variant="caption" className="font-bold opacity-60 uppercase mb-1 d-block">REUSE SAVED PATHS</Typography>
+                                            <FormControl fullWidth size="small">
+                                                <Select
+                                                    value={selectedRouteId}
+                                                    onChange={(e) => loadSavedRoute(e.target.value)}
+                                                    sx={{ borderRadius: 3 }}
+                                                    startAdornment={<History sx={{ mr: 1, opacity: 0.5 }} />}
+                                                    displayEmpty
+                                                >
+                                                    <MenuItem value="" disabled>Select from previous trips</MenuItem>
+                                                    {savedRoutes.map(r => <MenuItem key={r.id} value={r.id}>{r.name}</MenuItem>)}
+                                                </Select>
+                                            </FormControl>
+                                        </Box>
+                                        {points.length >= 2 && (
+                                            <Tooltip title="Reverse Direction">
+                                                <IconButton
+                                                    onClick={handleReverseRoute}
+                                                    sx={{ mt: 3, bgcolor: 'primary.light', border: '1px solid', borderColor: 'primary.main', color: 'primary.main', '&:hover': { bgcolor: 'primary.main', color: 'white' } }}
+                                                >
+                                                    <SwapCalls />
+                                                </IconButton>
+                                            </Tooltip>
+                                        )}
                                     </Box>
                                 </Stack>
                             )}

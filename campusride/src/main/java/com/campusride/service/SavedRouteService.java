@@ -24,7 +24,7 @@ public class SavedRouteService {
 
         @Transactional
         public SavedRouteResponseDTO saveRoute(UUID creatorId, CreateRouteRequest request) {
-                User creator = userRepository.findById(creatorId)
+                User creator = userRepository.findById(java.util.Objects.requireNonNull(creatorId))
                                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
 
                 Point startPoint = geometryFactory.createPoint(
@@ -45,7 +45,7 @@ public class SavedRouteService {
                                 .routePath(routePath)
                                 .build();
 
-                SavedRoute saved = savedRouteRepository.save(route);
+                SavedRoute saved = savedRouteRepository.save(java.util.Objects.requireNonNull(route));
                 return convertToDTO(saved);
         }
 

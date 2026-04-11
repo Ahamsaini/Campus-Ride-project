@@ -43,6 +43,11 @@ const RequestCard = ({ req, handleAction }) => (
                                 />
                                 <Chip icon={<Verified sx={{ fontSize: '1rem !important' }} />} label="Student" size="small" variant="outlined" color="success" />
                             </Stack>
+                            {req.estimatedContribution && (
+                                <Typography variant="caption" sx={{ mt: 1, display: 'block', color: 'primary.main', fontWeight: 'bold' }}>
+                                    Estimated Contribution: ₹{req.estimatedContribution}
+                                </Typography>
+                            )}
                         </Box>
                     </Stack>
                 </Grid>

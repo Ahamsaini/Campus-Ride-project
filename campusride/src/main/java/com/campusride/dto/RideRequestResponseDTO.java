@@ -20,6 +20,7 @@ public class RideRequestResponseDTO {
     private String status;
     private boolean riderAccepted;
     private boolean passengerAccepted;
+    private Double estimatedContribution;
     private LocalDateTime createdAt;
 
     @Getter
@@ -30,6 +31,7 @@ public class RideRequestResponseDTO {
     public static class RideInfoDTO {
         private UUID id;
         private RiderDTO rider;
+        private String status;
     }
 
     @Getter

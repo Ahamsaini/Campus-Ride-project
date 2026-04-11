@@ -14,6 +14,7 @@ import {
 } from '@mui/icons-material'
 import CampusMap from '../components/map/CampusMap'
 import axios from '../api/axiosInstance'
+import LocationSearchInput from '../components/common/LocationSearchInput'
 
 const vehicleIcons = {
     CAR: <DirectionsCar sx={{ fontSize: 14 }} />,
@@ -37,26 +38,42 @@ const SearchRidePage = () => {
     const theme = useTheme()
     const isMobile = useMediaQuery(theme.breakpoints.down('md'))
     const [isPanelOpen, setIsPanelOpen] = useState(true)
+    const [pickupName, setPickupName] = useState(null)
+    const [dropoffName, setDropoffName] = useState(null)
 
     const currentStep = !pickup ? 0 : !dropoff ? 1 : 2
 
-    const handleMapClick = (latlng) => {
+    const reverseGeocode = async (lat, lng) => {
+        try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18`)
+            const data = await res.json()
+            return data.name || data.display_name?.split(',')[0] || 'Map Location'
+        } catch { return 'Map Location' }
+    }
+
+    const handleMapClick = async (latlng) => {
         if (!pickup) {
             setPickup(latlng)
             setResults([])
             setSelectedRide(null)
+            const name = await reverseGeocode(latlng.lat, latlng.lng)
+            setPickupName(name)
         } else if (!dropoff) {
             setDropoff(latlng)
+            const name = await reverseGeocode(latlng.lat, latlng.lng)
+            setDropoffName(name)
         }
     }
 
     const handleUndo = () => {
         if (dropoff) {
             setDropoff(null)
+            setDropoffName(null)
             setResults([])
             setSelectedRide(null)
         } else if (pickup) {
             setPickup(null)
+            setPickupName(null)
             setResults([])
             setSelectedRide(null)
         }
@@ -233,23 +250,48 @@ const SearchRidePage = () => {
                         <Box sx={{ flexGrow: 1, overflowY: 'auto', p: 3 }}>
                             {error && <Alert severity="info" sx={{ mb: 3, borderRadius: 4 }}>{error}</Alert>}
                             <Stack spacing={2} sx={{ mb: 3 }}>
-                                <Paper variant="outlined" sx={{
-                                    p: 2, borderRadius: 4, display: 'flex', alignItems: 'center', gap: 2,
-                                    borderColor: pickup ? 'success.main' : '#e0e6ed', bgcolor: pickup ? 'rgba(46,125,50,0.05)' : 'transparent'
-                                }}>
-                                    <Avatar sx={{ bgcolor: pickup ? 'success.main' : '#e0e6ed', width: 32, height: 32 }}><MyLocation sx={{ fontSize: 16, color: pickup ? 'white' : 'text.secondary' }} /></Avatar>
-                                    <Box sx={{ flexGrow: 1 }}><Typography variant="body2" className="font-bold" color={pickup ? 'success.main' : 'text.secondary'}>{pickup ? `Pickup Set` : 'Click map to set Pickup'}</Typography></Box>
-                                    {pickup && <CheckCircle color="success" sx={{ fontSize: 20 }} />}
-                                </Paper>
-
-                                <Paper variant="outlined" sx={{
-                                    p: 2, borderRadius: 4, display: 'flex', alignItems: 'center', gap: 2,
-                                    borderColor: dropoff ? 'error.main' : '#e0e6ed', bgcolor: dropoff ? 'rgba(211,47,47,0.05)' : 'transparent'
-                                }}>
-                                    <Avatar sx={{ bgcolor: dropoff ? 'error.main' : '#e0e6ed', width: 32, height: 32 }}><FlagCircle sx={{ fontSize: 16, color: dropoff ? 'white' : 'text.secondary' }} /></Avatar>
-                                    <Box sx={{ flexGrow: 1 }}><Typography variant="body2" className="font-bold" color={dropoff ? 'error.main' : 'text.secondary'}>{dropoff ? `Dropoff Set` : pickup ? 'Now set Dropoff' : 'Set Pickup first'}</Typography></Box>
-                                    {dropoff && <CheckCircle color="error" sx={{ fontSize: 20 }} />}
-                                </Paper>
+                                <LocationSearchInput
+                                    label="Pickup Location"
+                                    placeholder="Type pickup name or use GPS..."
+                                    color="success"
+                                    icon={<MyLocation />}
+                                    value={pickup ? { lat: pickup.lat, lng: pickup.lng, name: pickupName || 'Pickup Set' } : null}
+                                    onLocationSelect={(loc) => {
+                                        setPickup({ lat: loc.lat, lng: loc.lng })
+                                        setPickupName(loc.name)
+                                        setResults([])
+                                        setSelectedRide(null)
+                                    }}
+                                    onClear={() => {
+                                        setPickup(null)
+                                        setPickupName(null)
+                                        setDropoff(null)
+                                        setDropoffName(null)
+                                        setResults([])
+                                        setSelectedRide(null)
+                                    }}
+                                />
+                                <LocationSearchInput
+                                    label="Dropoff Location"
+                                    placeholder="Type dropoff name or use GPS..."
+                                    color="error"
+                                    icon={<FlagCircle />}
+                                    value={dropoff ? { lat: dropoff.lat, lng: dropoff.lng, name: dropoffName || 'Dropoff Set' } : null}
+                                    onLocationSelect={(loc) => {
+                                        setDropoff({ lat: loc.lat, lng: loc.lng })
+                                        setDropoffName(loc.name)
+                                    }}
+                                    onClear={() => {
+                                        setDropoff(null)
+                                        setDropoffName(null)
+                                        setResults([])
+                                        setSelectedRide(null)
+                                    }}
+                                    disabled={!pickup}
+                                />
+                                <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center', opacity: 0.7 }}>
+                                    Or click directly on the map to set points
+                                </Typography>
 
 
 
@@ -291,12 +333,42 @@ const SearchRidePage = () => {
                                                                 />
                                                             </Stack>
                                                         </Box>
-                                                        <Chip label={`${Math.round(ride.matchScore * 100)}% Match`} size="small" color="success" />
+                                                        <Stack direction="row" spacing={1} alignItems="center">
+                                                            <Chip label={`${Math.round(ride.matchScore * 100)}% Match`} size="small" color="success" />
+                                                            {ride.status === 'IN_PROGRESS' && (
+                                                                <Chip 
+                                                                    label="● LIVE" 
+                                                                    size="small" 
+                                                                    sx={{ 
+                                                                        bgcolor: '#ef4444', 
+                                                                        color: 'white', 
+                                                                        fontWeight: 'bold',
+                                                                        fontSize: '0.65rem',
+                                                                        px: 0.5,
+                                                                        animation: 'pulse 2s infinite',
+                                                                        '@keyframes pulse': {
+                                                                            '0%': { opacity: 1, transform: 'scale(1)' },
+                                                                            '50%': { opacity: 0.7, transform: 'scale(0.95)' },
+                                                                            '100%': { opacity: 1, transform: 'scale(1)' },
+                                                                        }
+                                                                    }} 
+                                                                />
+                                                            )}
+                                                        </Stack>
                                                     </Stack>
                                                     <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
                                                         <Chip icon={<AccessTime />} label={new Date(ride.departureTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} size="small" variant="outlined" />
                                                         <Chip icon={<DirectionsCar />} label={ride.vehicleType} size="small" variant="outlined" />
                                                         <Chip icon={<EventSeat />} label={`${ride.seatsAvailable} seats`} size="small" variant="outlined" />
+                                                        {ride.estimatedContribution > 0 && (
+                                                            <Chip 
+                                                                icon={<CurrencyRupee />} 
+                                                                label={`Fuel Share: ₹${ride.estimatedContribution}`} 
+                                                                size="small" 
+                                                                color="primary"
+                                                                sx={{ fontWeight: 'bold' }}
+                                                            />
+                                                        )}
                                                     </Stack>
                                                     <Button fullWidth variant={requestSent[ride.id] ? "outlined" : "contained"} onClick={(e) => { e.stopPropagation(); handleRequest(ride.id) }} disabled={requestSent[ride.id]}>{requestSent[ride.id] ? "Request Sent" : "Join Ride"}</Button>
                                                 </CardContent>

@@ -184,16 +184,27 @@ const CampusMap = ({
                 )
             ))}
 
-            {markers.map((marker, index) => (
-                <Marker 
-                    key={marker.id || index} 
-                    position={marker.position} 
-                    icon={marker.icon === 'USER_LOCATION' ? createUserLocationIcon(marker.heading) : (marker.icon || DefaultIcon)}
-                    zIndexOffset={marker.icon === 'USER_LOCATION' || marker.icon === RiderLiveIcon || marker.icon === PassengerLiveIcon ? 1000 : 0}
-                >
-                    {marker.popup && <Popup>{marker.popup}</Popup>}
-                </Marker>
-            ))}
+            {markers.map((marker, index) => {
+                // Stabilize the icon to prevent Leaflet flickering on every render
+                let iconToUse = marker.icon || DefaultIcon;
+                
+                if (marker.icon === 'USER_LOCATION') {
+                    // We only want to recreate the icon if the heading actually changed
+                    // For now, we'll use a stable hash or just direct call if heading is identical
+                    iconToUse = createUserLocationIcon(marker.heading);
+                }
+
+                return (
+                    <Marker 
+                        key={marker.id || index} 
+                        position={marker.position} 
+                        icon={iconToUse}
+                        zIndexOffset={marker.icon === 'USER_LOCATION' || marker.icon === RiderLiveIcon || marker.icon === PassengerLiveIcon ? 1000 : 0}
+                    >
+                        {marker.popup && <Popup>{marker.popup}</Popup>}
+                    </Marker>
+                );
+            })}
 
             {/* Accuracy Circle */}
             {markers.filter(m => m.icon === 'USER_LOCATION' && m.accuracy).map((m, i) => (
@@ -238,6 +249,7 @@ const CampusMap = ({
                 .custom-div-icon {
                     background: none;
                     border: none;
+                    transition: all 5s linear; /* Matches the 5s sync interval for smooth sliding */
                 }
                 `}
             </style>

@@ -38,14 +38,23 @@ public interface RideRepository extends JpaRepository<Ride, UUID> {
       SELECT r.*,
              ST_Distance(r.route_path::geography, ST_SetSRID(ST_MakePoint(:pLng, :pLat), 4326)::geography) AS pickup_dist,
              ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:pLng, :pLat), 4326)) AS p_pos,
-             ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:dLng, :dLat), 4326)) AS d_pos
+             ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:dLng, :dLat), 4326)) AS d_pos,
+             ST_Length(ST_LineSubstring(r.route_path, 
+                 ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:pLng, :pLat), 4326)),
+                 ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:dLng, :dLat), 4326))
+             )::geography) AS segment_dist
       FROM rides r
       JOIN users u ON r.rider_id = u.id
       WHERE ST_DWithin(r.route_path::geography, ST_SetSRID(ST_MakePoint(:pLng, :pLat), 4326)::geography, :radius)
         AND ST_DWithin(r.route_path::geography, ST_SetSRID(ST_MakePoint(:dLng, :dLat), 4326)::geography, :radius)
         AND ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:pLng, :pLat), 4326)) <
             ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:dLng, :dLat), 4326))
-        AND r.status = 'OPEN'
+        /* Directional Vector check (Dot Product): Ensures general trip vectors align */
+        AND (
+            (ST_X(r.end_point) - ST_X(r.start_point)) * (:dLng - :pLng) +
+            (ST_Y(r.end_point) - ST_Y(r.start_point)) * (:dLat - :pLat)
+        ) > 0
+        AND r.status IN ('OPEN', 'IN_PROGRESS')
         AND r.seats_available > 0
       ORDER BY p_pos ASC
       """, nativeQuery = true)
@@ -54,4 +63,13 @@ public interface RideRepository extends JpaRepository<Ride, UUID> {
       @Param("dLng") double dLng, @Param("dLat") double dLat,
       @Param("radius") double radius,
       @Param("userGender") String userGender);
+  @Query(value = "SELECT ST_Length(ST_LineSubstring(r.route_path, " +
+                 "ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:pLng, :pLat), 4326)), " +
+                 "ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:dLng, :dLat), 4326)) " +
+                 ")::geography) FROM rides r WHERE r.id = :rideId", nativeQuery = true)
+  Double calculateSegmentDistance(@Param("rideId") UUID rideId, 
+                                 @Param("pLat") double pLat, @Param("pLng") double pLng,
+                                 @Param("dLat") double dLat, @Param("dLng") double dLng);
+  @Query(value = "SELECT ST_LineLocatePoint(r.route_path, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)) FROM rides r WHERE r.id = :rideId", nativeQuery = true)
+  Double calculatePointProgress(@Param("rideId") UUID rideId, @Param("lat") double lat, @Param("lng") double lng);
 }

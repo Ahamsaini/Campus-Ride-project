@@ -101,8 +101,14 @@ const DashboardPage = () => {
 
     const handleConfirm = async (requestId) => {
         try {
-            await axios.put(`/ride-requests/${requestId}/passenger-confirm`)
+            const res = await axios.put(`/ride-requests/${requestId}/passenger-confirm`)
+            const data = res.data
             fetchData()
+            
+            // If it's a mid-route join, go straight to tracking
+            if (data.ride?.status === 'IN_PROGRESS') {
+                navigate(`/live-tracking/${data.ride.id}`)
+            }
         } catch (err) {
             alert(err.response?.data?.message || 'Handshake confirmation failed')
         }
@@ -381,14 +387,19 @@ const DashboardPage = () => {
                                                                 </Typography>
                                                                 <Stack direction="row" spacing={1} alignItems="center">
                                                                     <Typography variant="caption" color="text.secondary">Status: {req.status}</Typography>
-                                                                    <Chip 
-                                                                        icon={<Star sx={{ fontSize: '0.8rem !important', color: '#f59e0b !important' }} />} 
-                                                                        label={`${req.ride?.rider?.trustScore || 0} pts`} 
-                                                                        size="small" 
-                                                                        sx={{ height: 18, fontSize: '0.65rem', bgcolor: '#fffbeb', color: '#92400e', fontWeight: 'bold' }} 
-                                                                    />
+                                                                        <Chip 
+                                                                            icon={<Star sx={{ fontSize: '0.8rem !important', color: '#f59e0b !important' }} />} 
+                                                                            label={`${req.ride?.rider?.trustScore || 0} pts`} 
+                                                                            size="small" 
+                                                                            sx={{ height: 18, fontSize: '0.65rem', bgcolor: '#fffbeb', color: '#92400e', fontWeight: 'bold' }} 
+                                                                        />
+                                                                    </Stack>
+                                                                    {req.estimatedContribution && (
+                                                                        <Typography variant="caption" className="font-bold" color="primary.main">
+                                                                            Contribution: ₹{req.estimatedContribution}
+                                                                        </Typography>
+                                                                    )}
                                                                 </Stack>
-                                                            </Stack>
                                                         }
                                                         secondaryTypographyProps={{ component: 'div' }}
                                                     />

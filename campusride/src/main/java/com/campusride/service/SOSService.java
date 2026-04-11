@@ -37,13 +37,13 @@ public class SOSService {
     public void triggerSOS(UUID rideId, UUID userId) {
         System.out.println("Processing SOS for rideId: " + rideId + " triggered by userId: " + userId);
 
-        Ride ride = rideRepository.findById(rideId)
+        Ride ride = rideRepository.findById(java.util.Objects.requireNonNull(rideId))
                 .orElseThrow(() -> {
                     System.err.println("SOS Failed: Ride not found for ID " + rideId);
                     return new IllegalArgumentException("Ride not found");
                 });
 
-        User triggeringUser = userRepository.findById(userId)
+        User triggeringUser = userRepository.findById(java.util.Objects.requireNonNull(userId))
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
 
         // Mark ride as emergency using boolean flag to avoid check constraint issues
@@ -125,7 +125,9 @@ public class SOSService {
                         "message", "🚨 Emergency detected nearby. Please stay vigilant.");
 
                 for (UUID uid : userIdsToNotify) {
-                    messagingTemplate.convertAndSend("/topic/notifications/" + uid, proximityAlert);
+                    if (uid != null) {
+                        messagingTemplate.convertAndSend("/topic/notifications/" + uid, proximityAlert);
+                    }
                 }
             }
         }
@@ -141,17 +143,18 @@ public class SOSService {
                 .build();
 
         // 1. Notify Admins
-        messagingTemplate.convertAndSend("/topic/admin/sos", notification);
-
-        // 2. Notify all participants on the live tracking screen
-        messagingTemplate.convertAndSend("/topic/ride/" + rideId + "/sos", notification);
+        if (notification != null) {
+            messagingTemplate.convertAndSend("/topic/admin/sos", notification);
+            // 2. Notify all participants on the live tracking screen
+            messagingTemplate.convertAndSend("/topic/ride/" + rideId + "/sos", notification);
+        }
 
         System.out.println("🚨 SOS Broadcast completed for Ride " + rideId + " by " + triggeringUser.getName());
     }
 
     @Transactional
     public void resolveSOS(UUID rideId) {
-        Ride ride = rideRepository.findById(rideId)
+        Ride ride = rideRepository.findById(java.util.Objects.requireNonNull(rideId))
                 .orElseThrow(() -> new IllegalArgumentException("Ride not found"));
 
         ride.setEmergencyActive(false);
@@ -171,8 +174,10 @@ public class SOSService {
                 "resolved", true,
                 "timestamp", LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
 
-        messagingTemplate.convertAndSend("/topic/admin/sos/resolved", resolution);
-        messagingTemplate.convertAndSend("/topic/ride/" + rideId + "/sos/resolved", resolution);
+        if (resolution != null) {
+            messagingTemplate.convertAndSend("/topic/admin/sos/resolved", resolution);
+            messagingTemplate.convertAndSend("/topic/ride/" + rideId + "/sos/resolved", resolution);
+        }
 
         System.out.println("✅ SOS Resolved for Ride " + rideId);
     }

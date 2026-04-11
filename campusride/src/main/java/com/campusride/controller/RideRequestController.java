@@ -50,6 +50,11 @@ public class RideRequestController {
         return ResponseEntity.ok(rideRequestService.rejectRequest(requestId, userId));
     }
 
+    @PutMapping("/{requestId}/expire")
+    public ResponseEntity<RideRequestResponseDTO> expire(@PathVariable UUID requestId) {
+        return ResponseEntity.ok(rideRequestService.expireRequest(requestId));
+    }
+
     @PutMapping("/ride/{rideId}/complete")
     public ResponseEntity<Void> completePassengerSession(
             @AuthenticationPrincipal UUID userId,
