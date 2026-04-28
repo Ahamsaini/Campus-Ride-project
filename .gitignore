@@ -38,3 +38,4 @@ task.md
 walkthrough.md
 realtime_marker_snippet.js
 campusride/src/main/resources/application.yml
+.env

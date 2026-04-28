@@ -1,0 +1,17 @@
+[33mcommit a3001fd0ffae2cf625e7e357dc9518bd9447ef9b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m
+Author: Aham Saini <sainiaham890@gmail.com>
+Date:   Sat Apr 11 21:47:29 2026 +0530
+
+    feat: implement core ride request, SOS, and location services with frontend dashboard and tracking pages
+
+[33mcommit 1c3b125c952ae0d74e572193dcf4d4a2dabedce0[m
+Author: Aham Saini <sainiaham890@gmail.com>
+Date:   Sat Mar 14 23:29:22 2026 +0530
+
+    Initial commit: Ride sharing platform with redirection loop and 500 error fixes
+
+[33mcommit b0fcbf55ffe0f690d4538052c3fe4a8946b61cef[m
+Author: Aham Saini <sainiaham890@gmail.com>
+Date:   Sat Mar 14 23:18:23 2026 +0530
+
+    Hackthoncampus
